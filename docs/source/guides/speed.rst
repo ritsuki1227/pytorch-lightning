@@ -191,13 +191,13 @@ You can set the ``tpu_cores`` trainer flag to 1, [7] (specific core) or 8 cores.
 .. code-block:: python
 
     # train on 1 TPU core
-    trainer = Trainer(tpu_cores=1)
+    trainer = Trainer(accelerator="tpu", devices=1)
 
     # train on 7th TPU core
-    trainer = Trainer(tpu_cores=[7])
+    trainer = Trainer(accelerator="tpu", devices=[7])
 
     # train on 8 TPU cores
-    trainer = Trainer(tpu_cores=8)
+    trainer = Trainer(accelerator="tpu", devices=8)
 
 To train on more than 8 cores (ie: a POD),
 submit this script using the xla_dist script.
