@@ -1118,7 +1118,7 @@ class LightningModule(
 
             dm = ...
             model = MyModel()
-            trainer = Trainer(gpus=2)
+            trainer = Trainer(accelerator="gpu", devices=2)
             predictions = trainer.predict(model, dm)
 
 

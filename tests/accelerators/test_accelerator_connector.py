@@ -478,7 +478,7 @@ def test_accelerator_cpu(_):
     assert isinstance(trainer.accelerator, CPUAccelerator)
 
     with pytest.raises(MisconfigurationException, match="You requested gpu:"):
-        trainer = Trainer(gpus=1)
+        trainer = Trainer(accelerator="gpu", devices=1)
     # TODO enable this test when add device availability check
     # with pytest.raises(MisconfigurationException, match="You requested gpu, but gpu is not available"):
     #     trainer = Trainer(accelerator="gpu")
