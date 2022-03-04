@@ -20,9 +20,9 @@ jobs:
       matrix:
         include:
           - {python-version: "3.8", pytorch-version: "1.7"}
-          - {python-version: "3.9", pytorch-version: "1.8"}
-          - {python-version: "3.9", pytorch-version: "1.9"}
-          - {python-version: "3.9", pytorch-version: "1.10"}
+          - {python-version: "3.8", pytorch-version: "1.8"}
+          - {python-version: "3.8", pytorch-version: "1.9"}
+          - {python-version: "3.8", pytorch-version: "1.10"}
           # nightly: add when there's a release candidate
           - {python-version: "3.9", pytorch-version: "1.11"}
 
