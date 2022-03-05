@@ -103,8 +103,8 @@ COPY ./.github/prune-packages.py requirements_prune_packages.py
 RUN \
     pip list | grep torch && \
     python -c "import torch; print(torch.__version__)" && \
-    python requirements_prune_packages.py requirements-extra.txt "horovod" "torchtext" && \
-    python requirements_prune_packages.py requirements-examples.txt "torchvision" && \
+    python requirements_adjust_versions.py requirements-extra.txt && \
+    python requirements_adjust_versions.py requirements-examples.txt && \
     # Install remaining requirements
     pip install -r requirements-extra.txt --no-cache-dir --find-links https://download.pytorch.org/whl/test/torch_test.html && \
     pip install -r requirements-examples.txt --no-cache-dir --find-links https://download.pytorch.org/whl/test/torch_test.html && \
@@ -132,5 +132,5 @@ RUN \
     conda info && \
     pip list && \
     python -c "import sys; ver = sys.version_info ; assert f'{ver.major}.{ver.minor}' == '$PYTHON_VERSION', ver" && \
-    python -c "import torch; assert torch.__version__.startswith('$PYTORCH_VERSION'), torch.__version__"
-    # python -c "import horovod.torch"
+    python -c "import torch; assert torch.__version__.startswith('$PYTORCH_VERSION'), torch.__version__" && \
+    python -c "import horovod.torch"
