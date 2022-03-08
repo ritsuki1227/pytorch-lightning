@@ -19,10 +19,10 @@ import pytest
 from torch.utils.data import BatchSampler, DataLoader, DistributedSampler, Sampler, SequentialSampler
 
 from pytorch_lightning import Trainer
+from pytorch_lightning.strategies import DDPSpawnStrategy
 from pytorch_lightning.trainer.states import RunningStage
 from pytorch_lightning.trainer.supporters import CombinedLoader
 from pytorch_lightning.utilities.data import _update_dataloader
-from pytorch_lightning.utilities.enums import _StrategyType
 from pytorch_lightning.utilities.exceptions import MisconfigurationException
 from pytorch_lightning.utilities.warnings import PossibleUserWarning
 from tests.helpers import BoringModel, RandomDataset
@@ -104,7 +104,7 @@ class TestSpawnBoringModel(BoringModel):
     def train_dataloader(self):
         return DataLoader(RandomDataset(32, 64), num_workers=self.num_workers)
 
-    def on_pretrain_routine_start(self):
+    def on_fit_start(self):
         self._resout = StringIO()
         self.ctx = redirect_stderr(self._resout)
         self.ctx.__enter__()
@@ -133,7 +133,7 @@ class TestSpawnBoringModel(BoringModel):
 @pytest.mark.parametrize("num_workers", [0, 1])
 def test_dataloader_warnings(tmpdir, num_workers):
     trainer = Trainer(default_root_dir=tmpdir, accelerator="cpu", devices=2, strategy="ddp_spawn", fast_dev_run=4)
-    assert trainer._accelerator_connector._strategy_type == _StrategyType.DDP_SPAWN
+    assert isinstance(trainer.strategy, DDPSpawnStrategy)
     trainer.fit(TestSpawnBoringModel(num_workers))
 
 
@@ -295,7 +295,7 @@ class LoaderTestModel(BoringModel):
 
 
 def test_loader_detaching():
-    """Checks that the loader has been resetted after the entrypoint."""
+    """Checks that the loader has been reset after the entrypoint."""
 
     loader = DataLoader(RandomDataset(32, 10), batch_size=1)
 

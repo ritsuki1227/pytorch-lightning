@@ -93,9 +93,8 @@ class ApexMixedPrecisionPlugin(MixedPrecisionPlugin):
             return optimizer.step(**kwargs)
         return closure_result
 
-    def on_load_checkpoint(self, checkpoint: Dict[str, Any]) -> None:
-        if "amp_scaling_state" in checkpoint:
-            amp.load_state_dict(checkpoint["amp_scaling_state"])
+    def state_dict(self) -> Dict[str, Any]:
+        return amp.state_dict()
 
-    def on_save_checkpoint(self, checkpoint: Dict[str, Any]) -> None:
-        checkpoint["amp_scaling_state"] = amp.state_dict()
+    def load_state_dict(self, state_dict: Dict[str, Any]) -> None:
+        amp.load_state_dict(state_dict)

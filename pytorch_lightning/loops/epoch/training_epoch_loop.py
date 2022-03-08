@@ -13,7 +13,7 @@
 # limitations under the License.
 import math
 from collections import defaultdict
-from typing import Any, Dict, Generator, Iterator, List, Optional, overload, Tuple, Union
+from typing import Any, Dict, Generator, List, Optional, overload, Tuple, Union
 
 import numpy as np
 import torch
@@ -24,6 +24,7 @@ from pytorch_lightning.loops.batch.training_batch_loop import _OUTPUTS_TYPE as _
 from pytorch_lightning.loops.utilities import _get_active_optimizers, _is_max_limit_reached
 from pytorch_lightning.trainer.connectors.logger_connector.result import _ResultCollection
 from pytorch_lightning.trainer.progress import BatchProgress, SchedulerProgress
+from pytorch_lightning.trainer.supporters import CombinedLoader
 from pytorch_lightning.utilities.apply_func import apply_to_collection
 from pytorch_lightning.utilities.auto_restart import _collect_states_on_rank_zero_over_collection
 from pytorch_lightning.utilities.exceptions import MisconfigurationException
@@ -59,7 +60,6 @@ class TrainingEpochLoop(loops.Loop[_OUTPUTS_TYPE]):
         self.min_steps = min_steps
         self.max_steps = max_steps
 
-        self.global_step: int = 0
         self.batch_progress = BatchProgress()
         self.scheduler_progress = SchedulerProgress()
 
@@ -69,9 +69,9 @@ class TrainingEpochLoop(loops.Loop[_OUTPUTS_TYPE]):
         self._results = _ResultCollection(training=True)
         self._outputs: _OUTPUTS_TYPE = []
         self._warning_cache = WarningCache()
-        self._dataloader_iter: Optional[Iterator] = None
         # caches the loaded dataloader state until dataloader objects are available
         self._dataloader_state_dict: Dict[str, Any] = {}
+        self._batches_that_stepped: int = 0
 
     @property
     def total_batch_idx(self) -> int:
@@ -86,6 +86,13 @@ class TrainingEpochLoop(loops.Loop[_OUTPUTS_TYPE]):
         # use `ready` instead of `completed` in case this is accessed after `completed` has been increased
         # but before the next `ready` increase
         return self.batch_progress.current.ready - 1
+
+    @property
+    def global_step(self) -> int:
+        lightning_module = self.trainer.lightning_module
+        if lightning_module is None or lightning_module.automatic_optimization:
+            return self.batch_loop.optimizer_loop.optim_progress.optimizer_steps
+        return self.batch_loop.manual_loop.optim_step_progress.total.completed
 
     @property
     def _is_training_done(self) -> bool:
@@ -142,7 +149,9 @@ class TrainingEpochLoop(loops.Loop[_OUTPUTS_TYPE]):
 
     def on_run_start(self, data_fetcher: AbstractDataFetcher) -> None:  # type: ignore[override]
         self._reload_dataloader_state_dict(data_fetcher)
-        self._dataloader_iter = iter(data_fetcher)
+        _ = iter(data_fetcher)  # creates the iterator inside the fetcher
+        # add the previous `fetched` value to properly track `is_last_batch` with no prefetching
+        data_fetcher.fetched += self.batch_progress.current.ready
 
     def advance(self, data_fetcher: AbstractDataFetcher) -> None:  # type: ignore[override]
         """Runs a single training batch.
@@ -156,16 +165,16 @@ class TrainingEpochLoop(loops.Loop[_OUTPUTS_TYPE]):
         # we are going to train first so the val loop does not need to restart
         self.val_loop.restarting = False
 
-        assert self._dataloader_iter is not None
         if not isinstance(data_fetcher, DataLoaderIterDataFetcher):
             batch_idx = self.batch_idx + 1
-            batch, self.batch_progress.is_last_batch = next(self._dataloader_iter)
+            batch = next(data_fetcher)
         else:
-            batch_idx, (batch, self.batch_progress.is_last_batch) = next(self._dataloader_iter)
+            batch_idx, batch = next(data_fetcher)
+        self.batch_progress.is_last_batch = data_fetcher.done
 
         self.batch_progress.increment_ready()
 
-        self.trainer.logger_connector.on_batch_start(batch, batch_idx)
+        self.trainer._logger_connector.on_batch_start(batch, batch_idx)
 
         if batch is None:
             self._warning_cache.warn("train_dataloader yielded None. If this was on purpose, ignore this warning...")
@@ -223,7 +232,7 @@ class TrainingEpochLoop(loops.Loop[_OUTPUTS_TYPE]):
             "on_train_batch_end", batch_end_outputs, batch, batch_idx, **extra_kwargs
         )
         self.trainer._call_callback_hooks("on_batch_end")
-        self.trainer.logger_connector.on_batch_end()
+        self.trainer._logger_connector.on_batch_end()
 
         self.batch_progress.increment_completed()
 
@@ -233,7 +242,7 @@ class TrainingEpochLoop(loops.Loop[_OUTPUTS_TYPE]):
         # -----------------------------------------
         # SAVE METRICS TO LOGGERS AND PROGRESS_BAR
         # -----------------------------------------
-        self.trainer.logger_connector.update_train_step_metrics()
+        self.trainer._logger_connector.update_train_step_metrics()
 
     def on_advance_end(self) -> None:
         # -----------------------------------------
@@ -245,17 +254,14 @@ class TrainingEpochLoop(loops.Loop[_OUTPUTS_TYPE]):
             self._run_validation()
             self.trainer.training = True
 
-        # -----------------------------------------
-        # SAVE LOGGERS (ie: Tensorboard, etc...)
-        # -----------------------------------------
-        self._save_loggers_on_train_batch_end()
-
         # update plateau LR scheduler after metrics are logged
         self.update_lr_schedulers("step", update_plateau_schedulers=True)
 
         if not self._should_accumulate():
-            # progress global step according to grads progress
-            self.global_step += 1
+            # this is increased once per batch disregarding multiple optimizers or tbptt on purpose for loggers
+            self._batches_that_stepped += 1
+        # this will save based on the `batches_that_stepped` value
+        self._save_loggers_on_train_batch_end()
 
         # if training finished, defer exit to the parent. this assumes there will be enough time in between
         # which might not be the case depending on what's in the `*_epoch_end` hooks
@@ -276,18 +282,18 @@ class TrainingEpochLoop(loops.Loop[_OUTPUTS_TYPE]):
         state_dict = super().on_save_checkpoint()
 
         if (
-            self.trainer is None
-            or not self.trainer.state._fault_tolerant_mode.is_enabled
-            or self.trainer.train_dataloader is None
-            or self._num_completed_batches_reached()  # did not finish
+            self.trainer is not None
+            and self.trainer.state._fault_tolerant_mode.is_enabled
+            and self.trainer.train_dataloader is not None
+            and not self._num_completed_batches_reached()  # did not finish
             # TODO: fault-tolerance requires a minimum number of batches so probably should be > 0
-            or self.batch_progress.current.ready == 0  # did not start
+            and self.batch_progress.current.ready  # did start
         ):
-            return state_dict
+            loader: CombinedLoader = self.trainer.train_dataloader
+            state = loader.state_dict(has_completed=self._has_completed())
+            if state:
+                state_dict["dataloader_state_dict"] = _collect_states_on_rank_zero_over_collection(state)
 
-        state_dict["dataloader_state_dict"] = _collect_states_on_rank_zero_over_collection(
-            self.trainer.train_dataloader.state_dict(has_completed=self._has_completed())
-        )
         return state_dict
 
     def on_load_checkpoint(self, state_dict: Dict) -> None:
@@ -501,10 +507,11 @@ class TrainingEpochLoop(loops.Loop[_OUTPUTS_TYPE]):
 
     def _save_loggers_on_train_batch_end(self) -> None:
         """Flushes loggers to disk."""
-        # when loggers should save to disk
-        should_flush_logs = self.trainer.logger_connector.should_flush_logs
-        if should_flush_logs and self.trainer.is_global_zero and self.trainer.logger is not None:
-            self.trainer.logger.save()
+        # this assumes that `batches_that_stepped` was increased before
+        should_flush = self._batches_that_stepped % self.trainer.flush_logs_every_n_steps == 0
+        if should_flush or self.trainer.should_stop:
+            for logger in self.trainer.loggers:
+                logger.save()
 
     def _reload_dataloader_state_dict(self, data_fetcher: AbstractDataFetcher) -> None:
         if self._dataloader_state_dict:
