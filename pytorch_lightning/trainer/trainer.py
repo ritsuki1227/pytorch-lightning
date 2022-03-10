@@ -2339,16 +2339,19 @@ class Trainer(
         )
         self._predicted_ckpt_path = ckpt_path
 
-    def save_checkpoint(self, filepath: _PATH, weights_only: bool = False) -> None:
+    def save_checkpoint(
+        self, filepath: _PATH, weights_only: bool = False, storage_options: Optional[Any] = None
+    ) -> None:
         r"""
         Runs routine to create a checkpoint.
 
         Args:
             filepath: Path where checkpoint is saved.
             weights_only: If ``True``, will only save the model weights.
+            storage_options: parameter for how to save to storage, passed to ``CheckpointIO`` plugin
 
         """
-        self._checkpoint_connector.save_checkpoint(filepath, weights_only)
+        self._checkpoint_connector.save_checkpoint(filepath, weights_only=weights_only, storage_options=storage_options)
 
     """
     Parsing properties
@@ -2468,7 +2471,11 @@ class Trainer(
 
     @property
     def global_step(self) -> int:
-        return self.fit_loop.global_step
+        """The number of optimizer steps taken (does not reset each epoch).
+
+        This includes multiple optimizers and TBPTT steps (if enabled).
+        """
+        return self.fit_loop.epoch_loop.global_step
 
     @property
     def current_epoch(self) -> int:
